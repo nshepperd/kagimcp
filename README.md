@@ -226,6 +226,10 @@ Environment variable | Description
 `KAGIMCP_PASSWORD` | Plaintext alternative to the hash.
 `KAGIMCP_ALLOWED_REDIRECTS` | Comma-separated OAuth redirect URI allowlist. Defaults to Claude's callbacks (`https://claude.ai/api/mcp/auth_callback`, `https://claude.com/api/mcp/auth_callback`).
 
+For a systemd deployment, `deploy/kagimcp.service` is a hardened unit
+(DynamicUser, read-only filesystem, syscall filter) expecting the repo at
+`/opt/kagimcp` and secrets in `/etc/kagimcp/env` (`deploy/env.example`).
+
 Behind nginx, proxy the whole site (the OAuth discovery endpoints live at
 `/.well-known/*` on the domain root, not under `/mcp`) and preserve the host
 so issued URLs match the public domain:
