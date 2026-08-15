@@ -86,7 +86,20 @@ class _KagiKeyPassthroughVerifier(TokenVerifier):
         return AccessToken(token=token, client_id="kagi-user", scopes=[])
 
 
+# Set by main() when --auth oauth is active; the bearer token is then an opaque
+# OAuth token rather than the Kagi key itself, and the key comes from the store.
+_oauth_store = None
+
+
 def _resolve_api_key() -> str:
+    if _oauth_store is not None:
+        key = _oauth_store.get_kagi_api_key() or _api_key_env
+        if key:
+            return key
+        raise ValueError(
+            "No Kagi API key configured. Log into /settings on this server "
+            "and save your key, or set KAGI_API_KEY."
+        )
     try:
         access = get_access_token()
     except RuntimeError:
@@ -371,7 +384,75 @@ def main():
         "(e.g. 'https://app.example.com,https://localhost:3000'). "
         "Only applies with --http; omit to disable CORS.",
     )
+    parser.add_argument(
+        "--auth",
+        choices=["passthrough", "oauth"],
+        default=os.environ.get("KAGIMCP_AUTH", "passthrough"),
+        help="HTTP auth mode: 'passthrough' treats the bearer token as the "
+        "Kagi API key; 'oauth' runs a full OAuth 2.1 authorization server "
+        "(for claude.ai custom connectors). Default: passthrough, or "
+        "KAGIMCP_AUTH.",
+    )
+    parser.add_argument(
+        "--base-url",
+        default=os.environ.get("KAGIMCP_BASE_URL"),
+        help="Public HTTPS URL this server is reachable at, e.g. "
+        "https://kagi.example.net (required for --auth oauth; or "
+        "KAGIMCP_BASE_URL).",
+    )
+    parser.add_argument(
+        "--db",
+        default=os.environ.get("KAGIMCP_DB", "kagimcp.db"),
+        help="SQLite database path for OAuth state (default: kagimcp.db, "
+        "or KAGIMCP_DB). Only used with --auth oauth.",
+    )
+    parser.add_argument(
+        "--hash-password",
+        action="store_true",
+        help="Prompt for a password, print its hash for "
+        "KAGIMCP_PASSWORD_HASH, and exit.",
+    )
     args = parser.parse_args()
+
+    if args.hash_password:
+        import getpass
+
+        from .oauth import hash_password
+
+        password = getpass.getpass("Password: ")
+        if password != getpass.getpass("Repeat:   "):
+            parser.error("passwords did not match")
+        print(hash_password(password))
+        return
+
+    if args.http and args.auth == "oauth":
+        from .oauth import Credentials, hash_password, setup_oauth
+
+        if not args.base_url:
+            parser.error("--auth oauth requires --base-url (or KAGIMCP_BASE_URL)")
+        username = os.environ.get("KAGIMCP_USERNAME")
+        password_hash = os.environ.get("KAGIMCP_PASSWORD_HASH")
+        password_plain = os.environ.get("KAGIMCP_PASSWORD")
+        if not username or not (password_hash or password_plain):
+            parser.error(
+                "--auth oauth requires KAGIMCP_USERNAME and either "
+                "KAGIMCP_PASSWORD_HASH (see --hash-password) or KAGIMCP_PASSWORD"
+            )
+        if not password_hash:
+            password_hash = hash_password(password_plain)
+
+        allowed = None
+        if raw := os.environ.get("KAGIMCP_ALLOWED_REDIRECTS", "").strip():
+            allowed = [u.strip() for u in raw.split(",") if u.strip()]
+
+        global _oauth_store
+        _oauth_store = setup_oauth(
+            mcp,
+            base_url=args.base_url,
+            db_path=args.db,
+            credentials=Credentials(username=username, password_hash=password_hash),
+            allowed_redirects=allowed,
+        )
 
     if args.http:
         cors_kwargs: dict[str, Any] = {}

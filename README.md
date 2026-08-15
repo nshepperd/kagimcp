@@ -190,6 +190,62 @@ curl -sL http://127.0.0.1:8000/mcp -X POST \
 
 To bump the version in production, edit the pin in the `Dockerfile` and redeploy.
 
+### OAuth mode (claude.ai custom connectors)
+
+claude.ai "custom connectors" only speak OAuth — there is no way to attach a
+static bearer header from the web UI. `--auth oauth` turns the server into a
+small single-user OAuth 2.1 authorization server: Claude registers itself via
+Dynamic Client Registration, you approve the connection on a consent page
+guarded by a username/password login, and your Kagi API key is stored
+server-side (entered once on `/settings`) instead of ever being given to the
+client.
+
+```sh
+kagimcp --hash-password   # prompts, prints a hash for KAGIMCP_PASSWORD_HASH
+
+KAGIMCP_USERNAME=you \
+KAGIMCP_PASSWORD_HASH='pbkdf2_sha256$...' \
+kagimcp --http --port 8000 \
+  --auth oauth \
+  --base-url https://kagi.example.net \
+  --db /var/lib/kagimcp/kagimcp.db
+```
+
+Then in claude.ai → Settings → Connectors → **Add custom connector**, set the
+URL to `https://kagi.example.net/mcp` and leave the OAuth client ID/secret
+blank (the server supports DCR). Approve the consent page when it opens, log
+into `https://kagi.example.net/settings` once, and paste your Kagi API key.
+
+Environment variable | Description
+--- | ---
+`KAGIMCP_AUTH` | `oauth` or `passthrough` (default). Same as `--auth`.
+`KAGIMCP_BASE_URL` | Public HTTPS URL of the server. Same as `--base-url`.
+`KAGIMCP_DB` | SQLite path for OAuth state. Same as `--db`.
+`KAGIMCP_USERNAME` | Login for the consent/settings pages.
+`KAGIMCP_PASSWORD_HASH` | PBKDF2 hash from `--hash-password` (preferred).
+`KAGIMCP_PASSWORD` | Plaintext alternative to the hash.
+`KAGIMCP_ALLOWED_REDIRECTS` | Comma-separated OAuth redirect URI allowlist. Defaults to Claude's callbacks (`https://claude.ai/api/mcp/auth_callback`, `https://claude.com/api/mcp/auth_callback`).
+
+Behind nginx, proxy the whole site (the OAuth discovery endpoints live at
+`/.well-known/*` on the domain root, not under `/mcp`) and preserve the host
+so issued URLs match the public domain:
+
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name kagi.example.net;
+
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        # SSE responses from /mcp should not be buffered
+        proxy_buffering off;
+        proxy_read_timeout 300s;
+    }
+}
+```
+
 ## Debugging
 
 Inspect the published package:
